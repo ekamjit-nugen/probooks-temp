@@ -1,0 +1,22 @@
+{
+  "extends": "@probooks/config/tsconfig.base.json",
+  "compilerOptions": {
+    // CDK toolchain overrides — see docs/adr/0006-cdk-tsconfig-overrides.md.
+    // The `cdk` CLI executes the app entry via `ts-node` (see cdk.json), which
+    // wants a CommonJS module target; and `aws-cdk-lib`'s own type definitions
+    // are not authored against `exactOptionalPropertyTypes`. These are the ONLY
+    // deviations from the locked base (STANDARDS §3); every other strict flag
+    // is retained. Mirrors the NestJS precedent in ADR-0003.
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": false,
+    "exactOptionalPropertyTypes": false,
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist", "cdk.out"]
+}
