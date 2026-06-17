@@ -1,0 +1,18 @@
+# Tooling
+.claude/
+
+# Build / deps
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+infra/cdk.out/
+pnpm-lock.yaml
+
+# Authored governance docs — prose, not code-formatted (do not reflow)
+CLAUDE.md
+PRD.md
+SPEC.md
+STANDARDS.md
+PROGRESS.md

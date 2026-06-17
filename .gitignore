@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Turbo
+.turbo/
+
+# Test / coverage
+coverage/
+*.lcov
+
+# Env & secrets — NEVER commit (STANDARDS §17)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Prisma local
+apps/api/prisma/*.db
+
+# CDK
+infra/cdk.out/
+
+# Local agent / tooling state (Claude Code settings + agent memory)
+.claude/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
