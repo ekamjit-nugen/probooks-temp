@@ -1,0 +1,26 @@
+{
+  "extends": "@probooks/config/tsconfig.base.json",
+  "compilerOptions": {
+    // NestJS framework overrides — see docs/adr/0003-nestjs-tsconfig-overrides.md
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": false,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "sourceMap": true,
+    "declaration": false,
+    "incremental": true,
+    "skipLibCheck": true,
+    "paths": {
+      // Test-only helper package (Testcontainers harness). It ships TS source
+      // with no dist (never built/bundled into the API), so point the type
+      // resolver at its source. Production code never imports it — only specs.
+      "@probooks/test-utils": ["../../packages/test-utils/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

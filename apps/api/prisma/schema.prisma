@@ -1,0 +1,210 @@
+// ProBooks data spine (STANDARDS §8; SPEC §2 tenancy spine).
+// Single schema file (STANDARDS §8.1). snake_case plural tables, UUID v7 PKs,
+// created_at/updated_at timestamptz (STANDARDS §5.2). Every tenant-scoped table
+// carries tenant_id + an index + an RLS policy (added in migration SQL — Prisma
+// does not model RLS, so policies/FORCE live in the migration; see Module 3).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Tenant (= accounting firm) lifecycle (SPEC §3 Phase 0; INV-TEN-4, INV-BILL-1).
+enum TenantStatus {
+  none
+  provisioned
+  active
+  suspended
+  deleted
+
+  @@map("tenants_status_t")
+}
+
+/// The five principal roles (SPEC §1, §4.17). client_owner/client_staff carried
+/// from day one per resolved decision #1 (PROGRESS §5).
+enum UserRole {
+  platform_operator
+  firm_admin
+  accountant
+  client_owner
+  client_staff
+
+  @@map("users_role_t")
+}
+
+/// Tenant = isolation boundary. NOT tenant-scoped itself (it IS the tenant), so
+/// it has no RLS tenant policy; the platform service_role manages it (INV-TEN-3).
+model Tenant {
+  id        String       @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  /// Region pin; default ca-central-1 (decision #4; INV-AUDIT-5 / PIPEDA).
+  region    String       @default("ca-central-1")
+  status    TenantStatus @default(none)
+  /// Nullable plan reference for now (billing lands later phase; INV-BILL-1).
+  planRef   String?      @map("plan_ref")
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users           User[]
+  clients         Client[]
+  auditEntries    AuditLog[]
+  idempotencyKey  IdempotencyKey[]
+  refreshTokens   RefreshToken[]
+  periodSummaries PeriodSummary[]
+
+  @@map("tenants")
+}
+
+/// A firm user or a client user. tenant-scoped (INV-TEN-1). client_id present
+/// iff the role is a client role (INV-AUTH-3) — enforced in service/DB CHECK.
+model User {
+  id         String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  role       UserRole
+  /// Bound to one client iff a client role (INV-AUTH-3). Nullable for firm users.
+  clientId   String?  @map("client_id") @db.Uuid
+  /// Identity-provider subject (the seam to Wave 3 auth; INV-AUTH-1).
+  idpSubject String   @map("idp_subject")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  client Client? @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, idpSubject], map: "uq_users_tenant_idp_subject")
+  @@index([tenantId], map: "ix_users_tenant_id")
+  @@index([tenantId, clientId], map: "ix_users_tenant_id_client_id")
+  @@map("users")
+}
+
+/// A business serviced by the firm (SPEC §2). tenant-scoped (INV-TEN-1).
+model Client {
+  id        String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  users           User[]
+  periodSummaries PeriodSummary[]
+
+  @@index([tenantId], map: "ix_clients_tenant_id")
+  @@map("clients")
+}
+
+/// Financial stub (Wave 6) — a period HST/tax summary. The canonical tenant
+/// FINANCIAL surface the Platform Operator must never read (INV-TEN-3): money is
+/// NUMERIC(18,4) (§8.6), the table is tenant- + client-scoped and RLS-enforced,
+/// and service_role holds NO DB grant on it (operator separation enforced at the
+/// grant layer, not only by code structure). Deliberately minimal — the real
+/// period/HST domain lands in a later phase.
+model PeriodSummary {
+  id          String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  clientId    String   @map("client_id") @db.Uuid
+  periodLabel String   @map("period_label")
+  netTax      Decimal  @map("net_tax") @db.Decimal(18, 4)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId], map: "ix_period_summaries_tenant_id")
+  @@index([tenantId, clientId], map: "ix_period_summaries_tenant_client")
+  @@map("period_summaries")
+}
+
+/// Append-only audit log with a per-tenant hash chain (STANDARDS §18.3;
+/// INV-AUDIT-1/2/3). No update/delete is ever permitted (revoked at DB role
+/// level — 20260604120200); modeled as insert-only. Hash-chain fields
+/// (position/prev_hash/entry_hash/actor_role/occurred_at) added Wave 4
+/// (20260605120000).
+model AuditLog {
+  id           String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  /// Per-tenant monotonic 1-based sequence (ordering + gap/fork detection).
+  position     BigInt
+  /// Predecessor entry_hash; the genesis constant for the first entry.
+  prevHash     String   @map("prev_hash")
+  /// sha256 over the canonical hashed fields — the tamper-evidence (INV-AUDIT-2).
+  entryHash    String   @map("entry_hash")
+  /// Acting principal (who). Nullable for system actions.
+  actorUserId  String?  @map("actor_user_id") @db.Uuid
+  /// Acting principal role (who). Nullable for system actions.
+  actorRole    String?  @map("actor_role")
+  /// What changed: a dotted action (e.g. "period.processed"); STANDARDS §5.4.
+  action       String
+  /// Affected entity kind + id (what).
+  entityType   String   @map("entity_type")
+  entityId     String?  @map("entity_id") @db.Uuid
+  /// before -> after snapshots (INV-AUDIT-1). JSON; nullable for create/delete.
+  beforeState  Json?    @map("before_state")
+  afterState   Json?    @map("after_state")
+  /// When the transition occurred (distinct from created_at = when row written).
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, position], map: "uq_audit_log_tenant_position")
+  @@unique([entryHash], map: "uq_audit_log_entry_hash")
+  @@index([tenantId, createdAt(sort: Desc)], map: "ix_audit_log_tenant_id_created_at")
+  @@index([tenantId, entityType, entityId], map: "ix_audit_log_tenant_entity")
+  @@index([tenantId, position], map: "ix_audit_log_tenant_position")
+  @@map("audit_log")
+}
+
+/// Idempotency keys for state-creating POSTs (STANDARDS §7.4). tenant-scoped.
+/// Lifecycle: a request CLAIMS its key (state=in_progress, request_fingerprint
+/// stored), runs the handler, then COMPLETES (state=completed, response stored)
+/// or RELEASES (row deleted) on handler error. A second delivery with the same
+/// key replays the stored response (same body) or 409s (different body / still
+/// in progress). The atomic upsert on (tenant_id, key) is the Layer-3 backstop
+/// (STANDARDS §15.2). Rows past expires_at are treated as absent (24h, §7.4).
+model IdempotencyKey {
+  id           String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  /// The client-supplied Idempotency-Key header value (a UUID).
+  key          String
+  /// sha256 over canonical(method+path+body) — detects same key + different body.
+  requestFingerprint String @map("request_fingerprint")
+  /// in_progress while the handler runs; completed once the response is stored.
+  state        String   @default("in_progress")
+  /// Stored response status + body for replay (null until completion).
+  responseStatus Int?   @map("response_status")
+  responseBody Json?    @map("response_body")
+  /// sha256 of the stored response body (integrity aid); null until completion.
+  responseHash String?  @map("response_hash")
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, key], map: "uq_idempotency_keys_tenant_key")
+  @@index([expiresAt], map: "ix_idempotency_keys_expires_at")
+  @@map("idempotency_keys")
+}
+
+/// Refresh tokens with rotation lineage (STANDARDS §10.1). tenant-scoped.
+model RefreshToken {
+  id         String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// JWT id of this refresh token (unique per tenant).
+  jti        String
+  /// Rotation lineage: the jti this token replaced (null for the first).
+  rotatedFromJti String? @map("rotated_from_jti")
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, jti], map: "uq_refresh_tokens_tenant_jti")
+  @@index([tenantId, userId], map: "ix_refresh_tokens_tenant_user")
+  @@map("refresh_tokens")
+}
