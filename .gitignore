@@ -29,8 +29,10 @@ apps/api/prisma/*.db
 # CDK
 infra/cdk.out/
 
-# Local agent / tooling state (Claude Code settings + agent memory)
-.claude/
+# Claude Code — track shared skills + agent context; ignore personal/local state
+.claude/*
+!.claude/skills/
+!.claude/agent-memory/
 
 # Editor / OS
 .DS_Store
@@ -38,3 +40,6 @@ infra/cdk.out/
 .vscode/*
 !.vscode/extensions.json
 *.log
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

@@ -2,14 +2,14 @@
   "name": "probooks",
   "version": "0.0.0",
   "private": true,
-  "description": "ProBooks — multi-firm SaaS bookkeeping/HST portal for Canadian accounting firms",
+  "description": "ProBooks \u2014 multi-firm SaaS bookkeeping/HST portal for Canadian accounting firms",
   "packageManager": "pnpm@9.14.2",
   "engines": {
     "node": ">=22 <23",
     "pnpm": ">=9"
   },
   "scripts": {
-    "build": "turbo run build",
+    "build": "node api.js && turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
